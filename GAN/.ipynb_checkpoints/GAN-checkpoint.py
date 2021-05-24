@@ -5,20 +5,10 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.autograd import Variable
 from torchvision.utils import save_image
-# from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 import numpy as np
-# from sklearn import svm
-# import sklearn.model_selection
-# import sklearn.metrics
-# from sklearn.metrics import accuracy_score
-# from sklearn.metrics import confusion_matrix
-# from sklearn.metrics import precision_recall_fscore_support
-# from sklearn.ensemble import VotingClassifier
 import math 
-# import tensorflow as tf
 from torch.autograd import Variable
-
 import os
 from os import listdir
 from os.path import isfile, join 
@@ -52,103 +42,135 @@ import argparse
 import pickle as pkl
 
 use_cuda = torch.cuda.is_available()
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
 device_ids = [i for i in range(torch.cuda.device_count())]
 device = 'cuda' if use_cuda else 'cpu'
 torch.backends.cudnn.benchmark = True
 from prettytable import PrettyTable
-
-### Network Debugging
-#########################################################################
-
-### Creating function for Gradient Visualisation 
-def plot_grad_flow(result_directory,named_parameters,model_name): 
-    
-    ave_grads = []
-    layers = []
-    for n, p in named_parameters:
-        if(p.requires_grad) and ("bias" not in n):
-            layers.append(n)
-            ave_grads.append(p.grad.abs().mean())
-    plt.figure(figsize=(12,12))
-    plt.plot(ave_grads, alpha=0.3, color="b")
-    plt.hlines(0, 0, len(ave_grads)+1, linewidth=1, color="k" )
-    plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
-    plt.xlim(xmin=0, xmax=len(ave_grads))
-    plt.xlabel("Layers")
-    plt.ylabel("average gradient")
-    plt.title("Gradient flow")
-    plt.grid(True)
-    plt.savefig(os.path.join(result_directory, model_name + "gradient_flow.png" ))
-    
-### Get all the children layers 
-def get_children(model: torch.nn.Module):
-    # get children form model!
-    children = list(model.children())
-    flatt_children = []
-    if children == []:
-        # if model has no children; model is last child! :O
-        return model
-    else:
-       # look for children from children... to the last child!
-       for child in children:
-            try:
-                flatt_children.extend(get_children(child))
-            except TypeError:
-                flatt_children.append(get_children(child))
-    return flatt_children
-    
-
-### Layer Activation in CNNs 
-
-    
-def visualise_layer_activation(model,local_batch,result_directory):
-    activation = {}
-    def get_activation(name):
-        def hook(model, input, output):
-            activation[name] = output.detach()
-        return hook
-    layer_name = 'conv1'
-    model.module.conv1.register_forward_hook(get_activation(layer_name))
-    output = model(local_batch)
-    act = activation[layer_name].squeeze()
-    print(act.shape)
-    #plot subplots for different images
-    for i in range(act[0].shape[0]):
-        output = im.fromarray(np.uint8(np.moveaxis(act[0][i].cpu().detach().numpy(), 0, -1))).convert('RGB')
-        output.save(os.path.join(result_directory,str(i)+'.png'))
-        #
-
-### Visualising Conv Filters
-def visualise_conv_filters(model,result_directory):
-    kernels = model.conv1.weight.detach()
-    print(kernels.shape)
-    # fig, axarr = plt.subplots(kernels.size(0))
-    # for i in range(kernels.shape[0]):
-    #     plt.savefig()
-    # for idx in range(kernels.size(0)):
-    #     axarr[idx].imsave(kernels[idx].squeeze(),result_directory + "1.png")
-    #
-    
-def count_parameters(model):
-    table = PrettyTable(["Modules", "Parameters"])
-    total_params = 0
-    for name, parameter in model.named_parameters():
-        if not parameter.requires_grad: continue
-        param = parameter.numel()
-        table.add_row([name, param])
-        total_params+=param
-    print(table)
-    print(f"Total Trainable Params: {total_params}")
-    return total_params
-
-#########################################################################################################################################################################################################
+import torch.nn.init as init
+# from vgg import vgg19
+from models import SRSN_RRDB
+from initializer import kaiming_normal_
+from utilities import plot_grad_flow, count_parameters, SobelGrad
+import kornia
+from models_feedback import DiscriminativeNet, VGGFeatureExtractor,SRFBN,SRSN_RRDB1
 
 
-
-
+####### Initialisation 
+def weight_init(m):
+    '''
+    Usage:
+        model = Model()
+        model.apply(weight_init)
+    '''
+    if isinstance(m, nn.Conv1d):
+        init.normal_(m.weight.data)
+        if m.bias is not None:
+            init.normal_(m.bias.data)
+    elif isinstance(m, nn.Conv2d):
+#         init.kaiming_uniform_(m.weight.data, a=0.2, mode='fan_in', nonlinearity='leaky_relu')
+#         init.xavier_normal_(m.weight.data)
+#         init.xavier_uniform_(m.weight.data, gain=1.0)
+        kaiming_normal_(m.weight.data, mode='fan_in',nonlinearity='leaky_relu')
+        if m.bias is not None:
+            init.normal_(m.bias.data)
+    elif isinstance(m, nn.Conv3d):
+#         init.kaiming_uniform_(m.weight.data, a=0, mode='fan_in', nonlinearity='leaky_relu')
+#         init.xavier_normal_(m.weight.data)
+        torch.nn.init.kaiming_normal_(m.weight.data, a=0, mode='fan_in', nonlinearity='leaky_relu')
+        if m.bias is not None:
+            init.normal_(m.bias.data)
+    elif isinstance(m, nn.ConvTranspose1d):
+        init.normal_(m.weight.data)
+        if m.bias is not None:
+            init.normal_(m.bias.data)
+    elif isinstance(m, nn.ConvTranspose2d):
+#         init.kaiming_uniform_(m.weight.data, a=0, mode='fan_in', nonlinearity='leaky_relu')
+#         init.xavier_normal_(m.weight.data)
+        torch.nn.init.kaiming_normal_(m.weight.data, a=0, mode='fan_in', nonlinearity='leaky_relu')
+        if m.bias is not None:
+            init.normal_(m.bias.data)
+    elif isinstance(m, nn.ConvTranspose3d):
+#         init.kaiming_uniform_(m.weight.data, a=0, mode='fan_in', nonlinearity='leaky_relu')
+#         init.xavier_normal_(m.weight.data)
+        torch.nn.init.kaiming_normal_(m.weight.data, a=0, mode='fan_in', nonlinearity='leaky_relu')
+        if m.bias is not None:
+            init.normal_(m.bias.data)
+    elif isinstance(m, nn.BatchNorm1d):
+        init.normal_(m.weight.data, mean=1, std=0.02)
+        init.constant_(m.bias.data, 0)
+    elif isinstance(m, nn.BatchNorm2d):
+        init.normal_(m.weight.data, mean=1, std=0.02)
+        init.constant_(m.bias.data, 0)
+    elif isinstance(m, nn.BatchNorm3d):
+        init.normal_(m.weight.data, mean=1, std=0.02)
+        init.constant_(m.bias.data, 0)
+    elif isinstance(m, nn.Linear):
+        init.xavier_normal_(m.weight.data)
+        init.normal_(m.bias.data)
+    elif isinstance(m, nn.LSTM):
+        for param in m.parameters():
+            if len(param.shape) >= 2:
+                init.orthogonal_(param.data)
+            else:
+                init.normal_(param.data)
+    elif isinstance(m, nn.LSTMCell):
+        for param in m.parameters():
+            if len(param.shape) >= 2:
+                init.orthogonal_(param.data)
+            else:
+                init.normal_(param.data)
+    elif isinstance(m, nn.GRU):
+        for param in m.parameters():
+            if len(param.shape) >= 2:
+                init.orthogonal_(param.data)
+            else:
+                init.normal_(param.data)
+    elif isinstance(m, nn.GRUCell):
+        for param in m.parameters():
+            if len(param.shape) >= 2:
+                init.orthogonal_(param.data)
+            else:
+                init.normal_(param.data)
+   
 ### Data Preparation ############################################
 ################################################################
+
+def normalize(data):
+    size=data[0].shape[0]*data[0].shape[1]*data[0].shape[2]
+    for i in range (len(data)):
+        x=data[i].reshape(1,size).tolist()
+        data[i]=(data[i]-min(x[0]))/(max(x[0])-min(x[0]))
+    return data
+
+def calculate_mean_std_dataset(loader):
+    mean_d = 0.
+    std_d = 0.
+    mean_l = 0. 
+    std_l = 0.
+    nb_samples = 0.
+    for data,label in loader:
+        batch_samples = data.size(0)
+        data = data.view(batch_samples, data.size(1), -1)
+        mean_d += data.mean(2).sum(0)
+        std_d += data.std(2).sum(0)
+        nb_samples += batch_samples
+        
+        label = label.view(batch_samples, label.size(1), -1)
+        mean_l += label.mean(2).sum(0)
+        std_l += label.std(2).sum(0)
+
+    mean_d /= nb_samples
+    std_d /= nb_samples
+    
+    mean_l /= nb_samples 
+    std_l /= nb_samples
+    print("Data Mean: ",mean_d)
+    print("Data Std: ",std_d)
+    print("Data Mean: ",mean_l)
+    print("Data Std: ",std_l)
+    return mean_d, std_d, mean_l, std_l
+    
 def load_images_from_folder(folder):
     c=0
     images = []
@@ -173,19 +195,24 @@ def process_and_train_load_data():
     train_y = []
     train_x = []
     data_train=[]
-    train_yy= load_images_from_folder('/home/harsh.shukla/SRCNN/training_test_data/Flickr/train/y')
+#     print("Before Train_y")
+    train_yy= load_images_from_folder('/home/harsh.shukla/SRCNN/SR_data/train/y')
+#     print("After Train_y")
     for i in train_yy:
         train_y.append(i)
-    train_xx= load_images_from_folder('/home/harsh.shukla/SRCNN/training_test_data/Flickr/train/x')
+#         print("Yes")
+#     print("Before Train_x")
+    train_xx= load_images_from_folder('/home/harsh.shukla/SRCNN/SR_data/train/x')
+#     print("After Train_x")
     for i in train_xx:
         train_x.append(i)
-    
-    train_yy= load_images_from_folder('/home/harsh.shukla/SRCNN/training_test_data/Div2K_data/train/y')
-    for i in train_yy:
-        train_y.append(i)
-    train_xx= load_images_from_folder('/home/harsh.shukla/SRCNN/training_test_data/Div2K_data/train/x')
-    for i in train_xx:
-        train_x.append(i)
+       
+#     train_yy= load_images_from_folder('/home/harsh.shukla/SRCNN/training_test_data/Div2K_data/train/y')
+#     for i in train_yy:
+#         train_y.append(i)
+#     train_xx= load_images_from_folder('/home/harsh.shukla/SRCNN/training_test_data/Div2K_data/train/x')
+#     for i in train_xx:
+#         train_x.append(i)
     
 #     train_yy= load_images_from_folder('/home/harsh.shukla/SRCNN/training_test_data/Urban100/train/y')
 #     for i in train_yy:
@@ -217,13 +244,13 @@ def process_and_train_load_data():
     for input, target in zip(train_input, train_target):
         data_train.append([input, target])
 
-    test= load_images_from_folder('/home/harsh.shukla/SRCNN/training_test_data/Flickr/test/x')
+    test= load_images_from_folder('/home/harsh.shukla/SRCNN/SR_data_512/test/x')
     test_input=np.asarray(test)
     test_input=np.moveaxis(test_input,1,-1)
     test_input=np.moveaxis(test_input,1,-1)
     test_input = test_input.astype(np.float32)
 
-    test= load_images_from_folder('/home/harsh.shukla/SRCNN/training_test_data/Flickr/test/y')
+    test= load_images_from_folder('/home/harsh.shukla/SRCNN/SR_data_512/test/y')
     test_target=np.asarray(test)
     test_target=np.moveaxis(test_target,1,-1)
     test_target=np.moveaxis(test_target,1,-1)
@@ -233,31 +260,38 @@ def process_and_train_load_data():
     data_test_urban=[]
     for input, target in zip(test_input, test_target):
         data_test_flickr.append([input, target])
-    
-    
-    
-    test= load_images_from_folder('/home/harsh.shukla/SRCNN/training_test_data/Div2K_data/test/x')
-    test_input=np.asarray(test)
-    test_input=np.moveaxis(test_input,1,-1)
-    test_input=np.moveaxis(test_input,1,-1)
-    test_input = test_input.astype(np.float32)
 
-    test= load_images_from_folder('/home/harsh.shukla/SRCNN/training_test_data/Div2K_data/test/y')
+    test= load_images_from_folder('/home/harsh.shukla/SRCNN/SR_data_512/Urban/x')
+    test_input=np.asarray(test)
+#     print("Urban:",test_input.shape)
+    test_input=np.moveaxis(test_input,1,-1)
+#     print("Urban:",test_input.shape)
+    test_input=np.moveaxis(test_input,1,-1)
+#     print("Urban:",test_input.shape)
+    test_input = test_input.astype(np.float32)
+#     print("Urban:",test_input.shape)
+
+    test= load_images_from_folder('/home/harsh.shukla/SRCNN/SR_data_512/Urban/y')
     test_target=np.asarray(test)
     test_target=np.moveaxis(test_target,1,-1)
     test_target=np.moveaxis(test_target,1,-1)
     test_target = test_target.astype(np.float32)
+    
 
     for input, target in zip(test_input, test_target):
         data_test_div.append([input, target])
         
-    test= load_images_from_folder('/home/harsh.shukla/SRCNN/training_test_data/Urban100/test/x')
+    test= load_images_from_folder('/home/harsh.shukla/SRCNN/SR_data_512/Div/x')
     test_input=np.asarray(test)
+#     print("Div : ",test_input.shape)
     test_input=np.moveaxis(test_input,1,-1)
+#     print("Div : ",test_input.shape)
     test_input=np.moveaxis(test_input,1,-1)
+#     print("Div : ",test_input.shape)
     test_input = test_input.astype(np.float32)
+#     print("Div : ",test_input.shape)
 
-    test= load_images_from_folder('/home/harsh.shukla/SRCNN/training_test_data/Urban100/test/y')
+    test= load_images_from_folder('/home/harsh.shukla/SRCNN/SR_data_512/Div/y')
     test_target=np.asarray(test)
     test_target=np.moveaxis(test_target,1,-1)
     test_target=np.moveaxis(test_target,1,-1)
@@ -265,242 +299,122 @@ def process_and_train_load_data():
 
     for input, target in zip(test_input, test_target):
         data_test_urban.append([input, target])
+        
     
-    trainloader=torch.utils.data.DataLoader(dataset=data_train, batch_size=48, shuffle=True)
-    testloader_flickr=torch.utils.data.DataLoader(dataset=data_test_flickr, batch_size=48, shuffle=True)
-    testloader_div=torch.utils.data.DataLoader(dataset=data_test_div, batch_size=48, shuffle=True)
-    testloader_urban=torch.utils.data.DataLoader(dataset=data_test_urban, batch_size=48, shuffle=True)
-    
+    trainloader=torch.utils.data.DataLoader(dataset=data_train, batch_size=16, shuffle=False)
+    testloader_flickr=torch.utils.data.DataLoader(dataset=data_test_flickr, batch_size=16, shuffle=False)
+    testloader_urban=torch.utils.data.DataLoader(dataset=data_test_div, batch_size=15, shuffle=False)
+    testloader_div=torch.utils.data.DataLoader(dataset=data_test_urban, batch_size=8, shuffle=False)
     
     return trainloader, testloader_flickr,testloader_div,testloader_urban
-################################################################
-
-class DiscriminativeNet(torch.nn.Module):
     
-    def __init__(self):
-        super(DiscriminativeNet, self).__init__()
-        
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(
-                in_channels=3, out_channels=32, kernel_size=6, 
-                stride=2, padding=2, bias=False
-            ),
-            nn.LeakyReLU(0.2, inplace=True)
-        )
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(
-                in_channels=32, out_channels=64, kernel_size=6,
-                stride=2, padding=2, bias=False
-            ),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.BatchNorm2d(64)
-        )
-        self.conv3 = nn.Sequential(
-            nn.Conv2d(
-                in_channels=64, out_channels=128, kernel_size=4,
-                stride=2, padding=1, bias=False
-            ),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.BatchNorm2d(128)
-        )
-        self.conv4 = nn.Sequential(
-            nn.Conv2d(
-                in_channels=128, out_channels=256, kernel_size=4,
-                stride=4, padding=0, bias=False
-            ),
-            nn.LeakyReLU(0.2, inplace=True),
-              nn.BatchNorm2d(256)
-        )
-#         self.conv5 = nn.Sequential(
-#             nn.Conv2d(
-#                 in_channels=256, out_channels=512, kernel_size=4,
-#                 stride=2, padding=1, bias=False
-#             ),
-#             nn.LeakyReLU(0.2, inplace=True),
-#             nn.BatchNorm2d(512)
-#         )
-#         self.conv6 = nn.Sequential(
-#             nn.Conv2d(
-#                 in_channels=512, out_channels=256, kernel_size=4,
-#                 stride=2, padding=1, bias=False
-#             ),
-#             nn.BatchNorm2d(256)
-#         )
-        self.conv7 = nn.Sequential(
-            nn.Conv2d(
-                in_channels=256, out_channels=128, kernel_size=4,
-                stride=4, padding=0, bias=False
-            ),
-            nn.BatchNorm2d(128)
-        )
-        self.Fc1 = nn.Sequential(
-            nn.Linear(128*4*4, 512),
-            nn.LeakyReLU(0.2, inplace=True)
-            # nn.Sigmoid(),
-        )
-        self.Fc2 = nn.Sequential(
-            nn.Linear(512,1),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        # Convolutional layers
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
-        x = self.conv4(x)
-#         x = self.conv5(x)
-#         x = F.relu(self.conv6(x))
-        x = F.relu(self.conv7(x))
-        
-        # Flatten and apply sigmoid
-#         print(x.shape)
-        x = x.view(-1, 128*4*4)
-#         print(x.shape)
-        x = self.Fc1(x)
-#         print(x.shape)
-        x = self.Fc2(x)
-#         print(x.shape)
-        # print(x)
-        return x
-    
-class SRSN(nn.Module):
-    def __init__(self, input_dim=3, dim=64, scale_factor=4):
-        super(SRSN, self).__init__()
-#         self.up = nn.ConvTranspose2d(3,3, 1, stride=1,output_size=(512,512))
-        self.conv1 = torch.nn.Conv2d(3, 128, 9, 1, 4)
-        self.conv2 = torch.nn.Conv2d(128, 64, 1, 1, 0)
-        self.resnet1 = Modified_Resnet_Block(dim, 7, 1, 3, bias=True)
-        self.resnet2 = Modified_Resnet_Block(dim, 7, 1, 3, bias=True)
-        self.resnet3 = Modified_Resnet_Block(dim, 5, 1, 2, bias=True)
-        self.resnet4 = Modified_Resnet_Block(dim, 3, 1, 1, bias=True)
-        self.up = torch.nn.Upsample(scale_factor=4, mode='bicubic')
-        self.conv3=torch.nn.Conv2d(64, 16, 1, 1, 0)
-        self.conv4=torch.nn.Conv2d(16, 3, 1, 1, 0)
-
-    def forward(self, LR):
-        LR_feat = F.leaky_relu(self.conv1(LR))
-        LR_feat = (F.leaky_relu(self.conv2(LR_feat)))
-        
-        ##Creating Skip connection between dense blocks 
-        out = self.resnet1(LR_feat) 
-        out = out + LR_feat
-        out1= self.resnet2(out)
-        out1= out + out1
-        
-        out2 = self.resnet3(out1)
-        out2 = out + out2
-        
-        out3 = self.resnet4(out2)
-        out3 = out + out1 + out3 
-        out3 = self.up(out3)
-        #LR_feat = self.resnet(out3)
-        SR=F.leaky_relu(self.conv3(out3))
-        SR =self.conv4(SR)
-        # print(SR.shape)
-        return SR
-
-class ResnetBlock(torch.nn.Module):
-    def __init__(self, num_filter, kernel_size=3, stride=1, padding=1, bias=True):
-        super(ResnetBlock, self).__init__()
-        self.conv1 = torch.nn.Conv2d(num_filter, num_filter, kernel_size, stride, padding, bias=bias)
-        self.conv2 = torch.nn.Conv2d(num_filter, num_filter, kernel_size, stride, padding, bias=bias)
-
-        self.act1 = torch.nn.LeakyReLU(inplace=True)
-        self.act2 = torch.nn.LeakyReLU(inplace=True)
-
-
-    def forward(self, x):
-
-        out = self.act1(x)
-        out = self.conv1(out)
-
-        out = self.act2(out)
-        out = self.conv2(out)
-
-        out = out + x
-
-        return out
-    
-class Modified_Resnet_Block(torch.nn.Module):
-    def __init__(self, num_filter, kernel_size=3, stride=1, padding=1, bias=True):
-        super(Modified_Resnet_Block, self).__init__()
-        self.conv1 = torch.nn.Conv2d(num_filter, num_filter, kernel_size, stride, padding, bias=bias)
-        self.conv2 = torch.nn.Conv2d(num_filter, num_filter, kernel_size, stride, padding, bias=bias)
-        self.conv3 = torch.nn.Conv2d(num_filter, num_filter, kernel_size, stride, padding, bias=bias)
-
-        self.act1 = torch.nn.LeakyReLU(inplace=True)
-        self.act2 = torch.nn.LeakyReLU(inplace=True)
-        self.act3 = torch.nn.LeakyReLU(inplace=True)
-
-
-    def forward(self, x):
-        
-        out = self.conv1(self.act1(x))
-        out = out + x
-        
-        out1 = self.conv2(self.act2(out))
-        out1 = x + out1 + out
-        
-        out2 = self.conv3(self.act3(out1))
-        out2 = out2 + out1 + out + x
-
-        return out2
 
 def train_discriminator(optimizer, real_data, fake_data,discriminator,b_loss):
+    
     optimizer.zero_grad()
+    prediction_real = discriminator(real_data.detach()).to(device)
+    prediction_fake = discriminator(fake_data.detach()).to(device)
     
     # 1. Train on Real Data
-    prediction_real = discriminator(real_data)
     truth_real=Variable(torch.ones(real_data.size(0), 1))-0.1
-    error_real = b_loss(prediction_real, truth_real.to(device))
-    error_real.backward()
+#     truth_real=Variable(torch.Tensor(real_data.size(0), 1).fill_(0.9).type(dtype))
+    error_real = b_loss(prediction_real, truth_real.to(device)) 
+    error_real.mean().backward(retain_graph=True)
 
     # 2. Train on Fake Data
-    prediction_fake = discriminator(fake_data.detach())
     error_fake = b_loss(prediction_fake, Variable(torch.zeros(real_data.size(0), 1)).to(device))
-    error_fake.backward()
+    error_fake.mean().backward()
     optimizer.step()
+
     return error_real + error_fake, prediction_real, prediction_fake
 
-def train_generator(model, optimizer, fake_data,real_data,discriminator,b_loss,m_loss):
+
+
+def train_generator(model_up,x,model, optimizer, fake_data,real_data,discriminator,b_loss,m_loss,vgg_features_high):
     optimizer.zero_grad()
+    loss_perceptual_low=0
+    loss_perceptual_high=0
+    lambda_ = 0
+    loss1=0
+    ##Reconstruction loss for feedback
+#     up=model_up(x)
+#     output=model(x,up)
+#     for i in range (len(output)):
+#         loss1+=m_loss(output[i].to(device), real_data)
+#     loss=loss1
     
-    lambda_ = 0.005
-    
-    ##Reconstruction loss
+    #Reconstruction loss
     loss=m_loss(fake_data, real_data)
+    
     ## Adversarial Loss 
-    prediction = discriminator(fake_data)
+    prediction = discriminator(fake_data).to(device)
     error = b_loss(prediction, Variable(torch.ones(real_data.size(0), 1)).to(device))
-    total_loss = loss + lambda_*error 
-    total_loss.backward()
+#     features_gt_low, features_gt_high=vgg_features_high(real_data)
+#     features_out_low, features_out_high=vgg_features_high(fake_data)
+    
+    ## Perceptual High
+#     loss_perceptual_low=m_loss(features_gt_low, features_out_low)
+#     loss_perceptual_high=m_loss(features_gt_high, features_out_high)
+    
+    ##Image Gradient Loss
+
+    sobel = SobelGrad()
+    pred_gradx,pred_grady,label_gradx,label_grady = sobel(fake_data.to(device), real_data.to(device))
+
+    pred_g = torch.sqrt(torch.pow(pred_gradx,2) + torch.pow(pred_grady,2))
+    label_g =torch.sqrt(torch.pow(label_gradx,2) + torch.pow(label_grady,2))
+    img_grad = m_loss(pred_g,label_g)
+
+    
+    total_loss = loss + lambda_*error + 0*loss_perceptual_low + 0*loss_perceptual_high + img_grad
+    total_loss.mean().backward()
     optimizer.step()
-    return loss,error,total_loss
+    return loss,error,total_loss,img_grad
 
 
-
-def train_network(trainloader, testloader_flickr,testloader_div,testloader_urban, debug,num_epochs=200,K=7):
-
+def train_network(trainloader, testloader_flickr,testloader_div,testloader_urban, debug,num_epochs=200,K=10):
     discriminator = DiscriminativeNet()
-    model=SRSN()
+    
+    model_up=SRSN_RRDB1()
+    model_up = nn.DataParallel(model_up, device_ids = device_ids)
+    model_up = model_up.to(device)
+    checkpoint_file='/home/harsh.shukla/SRCNN/Weights/L1_28.52.pt'
+    checkpoint = torch.load(checkpoint_file)
+    model_up.load_state_dict(checkpoint['generator_state_dict'])
+    model_up.eval()
+    
+    model=SRFBN()
+    model = nn.DataParallel(model, device_ids = device_ids)
+    discriminator = nn.DataParallel(discriminator, device_ids= device_ids)
     model = model.to(device)
+    model.apply(weight_init)
     discriminator=discriminator.to(device)
+#     vgg_features_high=nn.DataParallel(VGGFeatureExtractor())
+    vgg_features_high = nn.DataParallel(VGGFeatureExtractor())
+    vgg_features_high.to(device)
+       
+    d_optimizer = optim.SGD(discriminator.parameters(), lr=0.000001, momentum=0.9)
+    g_optimizer = optim.Adam(model.parameters(), lr=0.0002, betas=(0.9, 0.999), eps=1e-8)
 
-    d_optimizer = optim.Adam(discriminator.parameters(), lr=0.00001, betas=(0.5, 0.999))
-    g_optimizer = optim.Adam(model.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-8)
-
-    Mse_loss = nn.MSELoss().to(device)
-    Bce_loss = nn.BCELoss().to(device)
+    scheduler = torch.optim.lr_scheduler.StepLR(g_optimizer, step_size=60, gamma=0.8,verbose=True)
+    
+    Mse_loss = nn.DataParallel(nn.MSELoss(),device_ids = device_ids).to(device)
+    Bce_loss = nn.DataParallel(nn.BCEWithLogitsLoss(),device_ids = device_ids).to(device)
+    criterion = nn.DataParallel(nn.SmoothL1Loss(),device_ids = device_ids).to(device)
 
     train_d=[]
     train_g = []
+    best=0
     train_g_rec=[]
     train_g_dis=[]
     test=[]
     psnr_div=[]
     psnr_flickr=[]
     psnr_urban=[]
+    train_rmse=[]
+    train_psnr=[]
+    Disriminator_Loss=[]
+    Generator_Adver_Loss=[]
     ## Parameters in Networks
     print("Number of Parameters in Generator")
     count_parameters(model)
@@ -517,26 +431,46 @@ def train_network(trainloader, testloader_flickr,testloader_div,testloader_urban
     if not os.path.exists(checkpoints):
         os.makedirs(checkpoints)
     checkpoint_file = os.path.join(checkpoints,"check.pt")  
+    result_file = os.path.join(checkpoints,"result.pt")
     
     # Initialising directory for Network Debugging
     net_debug = os.path.join(results,"Debug")
     if not os.path.exists(net_debug):
         os.makedirs(net_debug)
     
-    model = nn.DataParallel(model, device_ids = device_ids)
-    discriminator = nn.DataParallel(discriminator, device_ids= device_ids)
+    
+   
     # load model if exists
-    if os.path.exists(checkpoint_file):
+    if os.path.exists(result_file):
         print("Loading from Previous Checkpoint...")
         checkpoint = torch.load(checkpoint_file)
         model.load_state_dict(checkpoint['generator_state_dict'])
         discriminator.load_state_dict(checkpoint['discriminator_state_dict'])
         g_optimizer.load_state_dict(checkpoint['g_state_dict'])
-        d_optimizer.load_state_dict(checkpoint['d_state_dict'])
+        d_optimizer.load_state_dict(checkpoint['d_state_dict'])   
         model.train()
         discriminator.train()
     else:
         print("No previous checkpoints exist, initialising network from start...")
+                
+                
+    if os.path.exists((os.path.join(results,"PSNR_flickr.txt"))):
+        dbfile = open(os.path.join(results,"PSNR_flickr.txt"), 'rb')      
+        psnr_flickr = pickle.load(dbfile)
+        dbfile = open(os.path.join(results,"PSNR_div.txt"), 'rb')      
+        psnr_div = pickle.load(dbfile)
+        dbfile = open(os.path.join(results,"PSNR_urban.txt"), 'rb')      
+        psnr_urban = pickle.load(dbfile)
+        dbfile = open(os.path.join(results,"Train.txt"), 'rb')      
+        train_psnr = pickle.load(dbfile)  
+        
+        dbfile = open(os.path.join(results,"Best.txt"), 'rb')      
+        best = pickle.load(dbfile)
+        
+        dbfile = open(os.path.join(results,"Discriminator.txt"), 'rb')      
+        Disriminator_Loss = pickle.load(dbfile)
+        dbfile = open(os.path.join(results,"Generator_Adversial.txt"), 'rb')      
+        Generator_Adver_Loss = pickle.load(dbfile)
         
 
     for epoch in range(num_epochs):
@@ -544,26 +478,32 @@ def train_network(trainloader, testloader_flickr,testloader_div,testloader_urban
         training_rec_loss_g=[]
         training_dis_loss_g=[]
         training_loss_g = []
+        training_loss_perp = []
         test_loss_flickr=[]
         test_loss_div=[]
         test_loss_urban=[]
+        train_rec_rmse=[]
         count = 0
         list_no=0
         for input_,real_data in trainloader:
             if torch.cuda.is_available():
-                input_ = input_.to(device)
-                real_data=real_data.to(device)
-
-            fake_data = model(input_)
+                input_    = input_.to(device)
+                real_data = real_data
+            up=model_up(input_)
+            fake_data = model(input_,up)
             if count == K:
                 d_error, d_pred_real, d_pred_fake = train_discriminator(d_optimizer, real_data, fake_data,discriminator,Bce_loss)
-                training_loss_d.append(d_error.item())
+                training_loss_d.append(d_error.mean().item())
                 count = 0
-            g_rec_error,g_dis_error,g_error = train_generator(model,g_optimizer, fake_data, real_data,discriminator,Bce_loss,Mse_loss)
-            training_rec_loss_g.append(g_rec_error.item())
-            training_dis_loss_g.append(g_dis_error.item())
-            training_loss_g.append(g_error.item())
+            
+            g_rec_error,g_dis_error,g_error,l_percp = train_generator(model_up,input_,model,g_optimizer, fake_data, real_data, discriminator, Bce_loss, criterion,vgg_features_high)
+            training_rec_loss_g.append(g_rec_error.mean().item())
+            training_dis_loss_g.append(g_dis_error.mean().item())
+            training_loss_g.append(g_error.mean().item())
+            training_loss_perp.append(l_percp.mean().item())
+            train_rec_rmse.append((Mse_loss(fake_data, real_data)).mean().item())
             count += 1 
+
         #Plotting Gradient Flow for both the models
         if(debug == True): 
             plot_grad_flow(net_debug,model.named_parameters(),"generator")
@@ -572,28 +512,33 @@ def train_network(trainloader, testloader_flickr,testloader_div,testloader_urban
         with torch.set_grad_enabled(False):
             for local_batch, local_labels in testloader_urban:
                 local_batch, local_labels = local_batch.to(device), local_labels.to(device)
-                output = model(local_batch).to(device)
+                up=model_up(local_batch)
+                output = model(local_batch,up).to(device)
                 local_labels.require_grad = False
-                test_loss_urban.append(Mse_loss(output, local_labels).item())
+                test_loss_urban.append(Mse_loss(output, local_labels).mean().item())
                 
             for local_batch, local_labels in testloader_div:
                 local_batch, local_labels = local_batch.to(device), local_labels.to(device)
-                output = model(local_batch).to(device)
+                up=model_up(local_batch)
+                output = model(local_batch,up).to(device)
                 local_labels.require_grad = False
-                test_loss_div.append(Mse_loss(output, local_labels).item())
+                test_loss_div.append(Mse_loss(output, local_labels).mean().item())
                 
             for local_batch, local_labels in testloader_flickr:
                 local_batch, local_labels = local_batch.to(device), local_labels.to(device)
-                output = model(local_batch).to(device)
+                up=model_up(local_batch)
+                output = model(local_batch,up).to(device)
+                
+        
                 local_labels.require_grad = False
-                test_loss_flickr.append(Mse_loss(output, local_labels).item())
+                test_loss_flickr.append(Mse_loss(output, local_labels).mean().item())
                 
         if debug == True:
             label=im.fromarray(np.uint8(np.moveaxis(local_labels[0].cpu().detach().numpy(),0,-1))).convert('RGB')
             output=im.fromarray(np.uint8(np.moveaxis(output[0].cpu().detach().numpy(),0,-1))).convert('RGB')
-            label.save(os.path.join(results,str(epoch) + 'test_target' + '.png'))
-            output.save(os.path.join(results,str(epoch) + 'test_output' + '.png'))
-        
+
+
+        scheduler.step()
         ##Creating Checkpoints
         if epoch % 1 == 0:
             torch.save({
@@ -602,26 +547,58 @@ def train_network(trainloader, testloader_flickr,testloader_div,testloader_urban
                 'g_state_dict': g_optimizer.state_dict(),
                 'd_state_dict': d_optimizer.state_dict(),
                 }, checkpoint_file)
+            
+        
         print("Epoch :",epoch )
         print("Discriminator Loss :",sum(training_loss_d)/len(training_loss_d))
         print("Generator Reconstruction Loss :",sum(training_rec_loss_g)/len(training_rec_loss_g))
         print("Generator Adversarial Loss :",sum(training_dis_loss_g)/len(training_dis_loss_g))
+        print("Perceptual Loss :", sum(training_loss_perp)/len(training_loss_perp))
         print("Total Generator Loss:",sum(training_loss_g)/len(training_loss_g))
         print("D(X) :",d_pred_real.mean(), "D(G(X)) :",d_pred_fake.mean())
+        Disriminator_Loss.append(sum(training_loss_d)/len(training_loss_d))
+        Generator_Adver_Loss.append(sum(training_dis_loss_g)/len(training_dis_loss_g))
         
+        print(len(test_loss_flickr),max(test_loss_flickr))
         psnr_flickr.append(10*math.log10(255*255/(sum(test_loss_flickr)/len(test_loss_flickr))))
         psnr_div.append(10*math.log10(255*255/(sum(test_loss_div)/len(test_loss_div))))
         psnr_urban.append(10*math.log10(255*255/(sum(test_loss_urban)/len(test_loss_urban))))
+        train_rmse.append(sum(train_rec_rmse)/len(train_rec_rmse))
+        train_psnr.append(10*math.log10(255*255/train_rmse[-1]))
         with open(os.path.join(results,"PSNR_flickr.txt"), 'wb') as f:
              pickle.dump(psnr_flickr,f )
         with open(os.path.join(results,"PSNR_div.txt"), 'wb') as f:
              pickle.dump(psnr_div,f )
-        with open(os.path.join(results,"PSNR_bsd.txt"), 'wb') as f:
+        with open(os.path.join(results,"PSNR_urban.txt"), 'wb') as f:
              pickle.dump(psnr_urban,f )
+        with open(os.path.join(results,"Train.txt"), 'wb') as f:
+             pickle.dump(train_psnr,f )
+                
+        if best< psnr_flickr[-1]:
+            best= psnr_flickr[-1]
+            with open(os.path.join(results,"Best.txt"), 'wb') as f:
+              pickle.dump(best,f )
+            torch.save({
+                'generator_state_dict': model.state_dict(),
+                'discriminator_state_dict': discriminator.state_dict(),
+                'g_state_dict': g_optimizer.state_dict(),
+                'd_state_dict': d_optimizer.state_dict(),
+                }, result_file)
+                
+            label.save(os.path.join(results,str(epoch) + 'test_target' +str(best) +'.png'))
+            output.save(os.path.join(results,str(epoch) + 'test_output' + str(best)+'.png'))
+       
+        with open(os.path.join(results,"Discriminator.txt"), 'wb') as f:
+             pickle.dump(Disriminator_Loss,f )
+        with open(os.path.join(results,"Generator_Adversial.txt"), 'wb') as f:
+             pickle.dump(Generator_Adver_Loss,f )
 #         print("Epoch :",epoch, flush=True)
-#         print("Test loss for Flickr:",sum(test_loss_flickr)/len(test_loss_flickr),flush=True)
+
+        print("Training Rmse loss : ",train_rmse[-1])
+        print("Training PSNR : ",train_psnr[-1])
+        print("Test loss for Flickr:",sum(test_loss_flickr)/len(test_loss_flickr),flush=True)
         print("Test loss for Div:",sum(test_loss_div)/len(test_loss_div),flush=True)
-#         print("Test loss for Urban:",sum(test_loss_urban)/len(test_loss_urban),flush=True)
+        print("Test loss for Urban:",sum(test_loss_urban)/len(test_loss_urban),flush=True)
         print("PSNR for Flickr :", 10*math.log10(255*255/(sum(test_loss_flickr)/len(test_loss_flickr))))
         print("PSNR for Div :", 10*math.log10(255*255/(sum(test_loss_div)/len(test_loss_div))))
         print("PSNR for Urban100 :", 10*math.log10(255*255/(sum(test_loss_urban)/len(test_loss_urban))))  
@@ -659,5 +636,4 @@ if __name__ == '__main__':
     print("Initialised Data Loader ....")
     train_network(trainloader, testloader_flickr,testloader_div,testloader_urban,grad_flow_flag)
     
-
 

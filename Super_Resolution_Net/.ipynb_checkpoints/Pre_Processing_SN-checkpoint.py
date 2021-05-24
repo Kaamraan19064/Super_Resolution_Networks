@@ -16,14 +16,14 @@ class pre_process:
         self.count = 0
         if string == "train": 
             path = self.train_path 
-            processed_input = "/home/harsh.shukla/SRCNN/SR_data/train/input"
-            processed_target = "/home/harsh.shukla/SRCNN/SR_data/train/target"
-            processed_dir = "/home/harsh.shukla/SRCNN/SR_data/train"
+            processed_input = "/home/harsh.shukla/SRCNN/SR_data_512/train/input"
+            processed_target = "/home/harsh.shukla/SRCNN/SR_data_512/train/target"
+            processed_dir = "/home/harsh.shukla/SRCNN/SR_data_512/train"
         else:
             path = self.test_path
-            processed_input = "/home/harsh.shukla/SRCNN/SR_data/test/input"
-            processed_target = "/home/harsh.shukla/SRCNN/SR_data/test/target"
-            processed_dir = "/home/harsh.shukla/SRCNN/SR_data/test/"
+            processed_input = "/home/harsh.shukla/SRCNN/training_test_data/Urban/input"
+            processed_target = "/home/harsh.shukla/SRCNN/training_test_data/Urban/target"
+            processed_dir = "/home/harsh.shukla/SRCNN/training_test_data/Urban/"
         
         os.chdir(path)
         walker = list(os.walk(path))
@@ -37,31 +37,31 @@ class pre_process:
         os.mkdir(processed_input)
         os.mkdir(processed_target)
 #         print(filenames)
+        list_x=[]
+        list_y=[]
+        c=0
         for i in filenames:
-            print(i)
-            im = Image.open(i)
-            left = int(im.size[0]/2-512/2)
-            upper = int(im.size[1]/2-512/2)
-            right = left + 512
-            lower = upper + 512
-            im = im.crop((left, upper,right,lower))
-            im.save(os.path.join(processed_input, str(self.count) + '.png'))
-            im = im.resize((128,128))
-            im.save(os.path.join(processed_target, str(self.count)  + '.png'))
-            self.count+=1
-#             if i.split('.')[0][-1]== path[-1] :
-#                 im = im.resize((64,64))
-#                 im = im.resize((128,128))
-#                 im.save(os.path.join(processed_input,i.split('.')[0].split('_')[0]+i.split('.')[0].split('_')[1]+"_"+path[-1]+".jpg"))
-#             else:
-# #             print(name[-1])
-#                 im.save(os.path.join(processed_target, i.split('.')[0].split('_')[0]+i.split('.')[0].split('_')[1]+"_"+path[-1]+".jpg"))
-#             print(os.path.join(processed_dir, i))
             
+            im = Image.open(i)
+            print(im.size)
+            if im.size[1]>=768 and im.size[0]>=768:
+#                 print(im.size)
+                print(c)
+                c=c+1
+                left = int(im.size[0]/2-768/2)
+                upper = int(im.size[1]/2-768/2)
+                right = left + 768
+                lower = upper + 768
+                im = im.crop((left, upper,right,lower))
+                im.save(os.path.join(processed_target, str(c)  + '.png'))
+                im = im.resize((192,192))
+                im.save(os.path.join(processed_input, str(c) + '.png'))
+                
+                
 
 ##Div 2k
 train_directory = "/scratch/harsh_cnn/train"
-test_directory = "/scratch/harsh_cnn/test"
+test_directory = "/home/harsh.shukla/SRCNN/test_Data/Urban100"
 
 ##Real SR
 # train_directory = "/home/harsh.shukla/SRCNN/RealSR (ICCV2019)/Nikon/Train/2"
